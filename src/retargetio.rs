@@ -30,9 +30,9 @@ extern "C" {
 
 #[macro_export]
 macro_rules! uart_writeln {
-    ($($arg:tt)*) => {
+    ($($arg:tt)*) => {{
         use core::fmt::Write;
         let mut io = $crate::retargetio::Io;
         writeln!(io, $($arg)*).unwrap();
-    };
+    }};
 }

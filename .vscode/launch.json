@@ -1,0 +1,46 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach PSoC6 CM4 (KitProg3_MiniProg4)",
+            "type": "cortex-debug",
+            "request": "attach",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/target/thumbv7em-none-eabi/debug/smi-rs",
+            "servertype": "openocd",
+            "serverpath": "${env:CY_TOOLS_PATHS}/openocd/bin/openocd",
+            "searchDir": [
+                "${workspaceFolder}",
+                "${env:CY_TOOLS_PATH}/openocd/scripts/"
+            ],
+            "openOCDPreConfigLaunchCommands": [
+                "set ENABLE_ACQUIRE 0"
+            ],
+            "configFiles": [
+                "openocd.tcl"
+            ],
+            "overrideAttachCommands": [
+                "set mem inaccessible-by-default off",
+                "-enable-pretty-printing",
+                "set remotetimeout 15",
+                "info threads"
+            ],
+            "numberOfProcessors": 2,
+            "targetProcessor": 1,// Set to 0 for the CM0+, set to 1 for the CM4
+            "overrideRestartCommands": [
+                "starti"
+            ],
+            "postRestartSessionCommands": [
+            ],
+            // svdFile is optional, it can be very large.
+            // "svdFile": "../mtb_shared/mtb-pdl-cat1/release-v3.9.0/devices/COMPONENT_CAT1A/svd/psoc6_02.svd",
+            "breakAfterReset": false,
+            "runToEntryPoint": "http_task",
+            "showDevDebugOutput": "none",
+            "presentation": {
+                "hidden": false,
+                "group": "CM4"
+            }
+        },
+    ]
+}
