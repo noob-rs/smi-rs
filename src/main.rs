@@ -4,6 +4,7 @@
 #[macro_use]
 extern crate num_derive;
 
+mod cy_http_client_api;
 mod cy_wcm;
 mod http;
 mod retargetio;
@@ -13,9 +14,9 @@ use core::panic::PanicInfo;
 use crate::http::WifiConnectionManager;
 
 extern "C" {
-    fn http_task_init();
-    fn http_task_connect();
-    fn _http_task();
+    // fn http_task_init();
+    // fn http_task_connect();
+    // fn _http_task();
     fn cy_rtos_delay_milliseconds(ms: u32);
 }
 
@@ -24,7 +25,7 @@ pub extern "C" fn http_task() {
     // unsafe { _http_task() };
     uart_writeln!("Hello {:} from foo_task!", 42);
 
-    let wcm = WifiConnectionManager::new();
+    let mut wcm = WifiConnectionManager::new();
     let status = wcm.init();
     uart_writeln!("wcm.init: {:?}", status);
 
@@ -34,10 +35,25 @@ pub extern "C" fn http_task() {
         if status.is_ok() {
             break;
         }
-        // unsafe { cy_rtos_delay_milliseconds(500) };
+        unsafe { cy_rtos_delay_milliseconds(1000) };
     }
 
     uart_writeln!("Connected !");
+
+    let status = wcm.http_client_init();
+    uart_writeln!("http_client_init: {:?}", status);
+
+    let status = wcm.http_client_connect("smi-server.stefan-hackenberg.de", 80);
+    uart_writeln!("http_client_connect: {:?}", status);
+
+    let status = wcm.http_client_send("/hello", None);
+    uart_writeln!("http_client_send: {:?}", status);
+    if let Ok(data) = status {
+        uart_writeln!(
+            "http_client_send response: {:?}",
+            core::str::from_utf8(data).unwrap()
+        );
+    }
 }
 
 #[inline(never)]

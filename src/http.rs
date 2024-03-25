@@ -3,6 +3,12 @@ use core::mem::MaybeUninit;
 use num_traits::FromPrimitive;
 
 use crate::{
+    cy_http_client_api::{
+        cy_awsport_server_info, cy_http_client_connect, cy_http_client_create, cy_http_client_init,
+        cy_http_client_method_CY_HTTP_CLIENT_METHOD_GET, cy_http_client_request_header_t,
+        cy_http_client_response_t, cy_http_client_send, cy_http_client_t,
+        cy_http_client_write_header,
+    },
     cy_wcm::{
         cy_wcm_config_t, cy_wcm_connect_ap, cy_wcm_connect_params_t, cy_wcm_init,
         cy_wcm_interface_t_CY_WCM_INTERFACE_TYPE_STA, cy_wcm_ip_address_t,
@@ -12,6 +18,7 @@ use crate::{
 };
 
 const CY_RSLT_WCM_ERR_BASE: u32 = 0x82e0000;
+const CY_RSLT_HTTP_CLIENT_ERR_BASE: u32 = 0x83a0000;
 
 #[allow(non_snake_case)]
 const fn WHD_RESULT_CREATE(x: u32) -> u32 {
@@ -195,14 +202,72 @@ pub enum WifiConnectionError {
     WhdWlanNofunction = WHD_RESULT_CREATE(2044),  //< Function pointer not provided
     WhdWlanInvalid = WHD_RESULT_CREATE(2045),     //< Not valid
     WhdWlanNoband = WHD_RESULT_CREATE(2046),      //< No Band
+    // Generic HTTP Client library error.
+    CyRsltHttpClientError = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 1),
+    // Invalid argument.
+    CyRsltHttpClientErrorBadarg = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 2),
+    // Out of memory.
+    CyRsltHttpClientErrorNomem = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 3),
+    // HTTP Client library Init failed.
+    CyRsltHttpClientErrorInitFail = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 4),
+    // HTTP Client library Deinit failed.
+    CyRsltHttpClientErrorDeinitFail = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 5),
+    // HTTP Client object not initialized.
+    CyRsltHttpClientErrorObjNotInitialized = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 6),
+    // HTTP connect failed.
+    CyRsltHttpClientErrorConnectFail = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 7),
+    // HTTP disconnect failed.
+    CyRsltHttpClientErrorDisconnectFail = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 8),
+    // HTTP Client not connected.
+    CyRsltHttpClientErrorNotConnected = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 9),
+    // HTTP Client already connected.
+    CyRsltHttpClientErrorAlreadyConnected = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 10),
+    // Invalid credentials.
+    CyRsltHttpClientErrorInvalidCredentials = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 11),
+    // TLS handshake failed.
+    CyRsltHttpClientErrorHandshakeFail = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 12),
+    // HTTP response was partially received.
+    CyRsltHttpClientErrorPartialResponse = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 13),
+    // No HTTP response was received.
+    CyRsltHttpClientErrorNoResponse = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 14),
+    // Server sent more headers than the configured number of headers.
+    CyRsltHttpClientErrorMaxHeaderSizeExceeded = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 15),
+    // Server sent a chunk header containing one or more invalid characters.
+    CyRsltHttpClientErrorInvalidChunkHeader = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 16),
+    // Response contains invalid characters in the Content-Length header.
+    CyRsltHttpClientErrorInvalidContentLength = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 17),
+    // Error occurred while parsing the response.
+    CyRsltHttpClientErrorParser = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 18),
+    // The requested header field was not found in the response.
+    CyRsltHttpClientErrorNoHeader = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 19),
+    // HTTP response is either corrupt or incomplete.
+    CyRsltHttpClientErrorInvalidResponse = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 20),
+}
+
+macro_rules! slice2nulstr {
+    ($name:ident) => {{
+        let mut nulstr = [0u8; 256];
+        if $name.len() > nulstr.len() {
+            return Err(WifiConnectionError::CyRsltWcmBadArg);
+        }
+        nulstr[..$name.len()].copy_from_slice($name.as_bytes());
+        nulstr
+    }};
 }
 
 #[derive(Debug)]
-pub struct WifiConnectionManager;
+pub struct WifiConnectionManager {
+    /// Buffer for http requests
+    http_buffer: [u8; 4096],
+    client_handle: MaybeUninit<cy_http_client_t>,
+}
 
 impl WifiConnectionManager {
     pub fn new() -> Self {
-        WifiConnectionManager
+        WifiConnectionManager {
+            http_buffer: [0; 4096],
+            client_handle: MaybeUninit::uninit(),
+        }
     }
 
     pub fn init(&self) -> Result<(), WifiConnectionError> {
@@ -234,5 +299,112 @@ impl WifiConnectionManager {
             0 => Ok(unsafe { ip_addr.ip.v4 }.to_le_bytes()),
             x => Err(FromPrimitive::from_u32(x).unwrap()),
         }
+    }
+
+    pub fn http_client_init(&self) -> Result<(), WifiConnectionError> {
+        let status = unsafe { cy_http_client_init() };
+        match status {
+            0 => Ok(()),
+            x => Err(FromPrimitive::from_u32(x).unwrap()),
+        }
+    }
+
+    pub fn http_client_connect(
+        &mut self,
+        hostname: &str,
+        port: u32,
+    ) -> Result<(), WifiConnectionError> {
+        let hostname = slice2nulstr!(hostname);
+        let mut serverinfo = cy_awsport_server_info {
+            host_name: hostname.as_ptr() as *const i8,
+            port: port as u16,
+        };
+        unsafe {
+            uart_writeln!("client_handle: {:?}", self.client_handle.assume_init());
+        }
+
+        let status = unsafe {
+            cy_http_client_create(
+                core::ptr::null_mut(),
+                &mut serverinfo,
+                None,
+                core::ptr::null_mut(),
+                self.client_handle.assume_init_mut(),
+            )
+        };
+        if status != 0 {
+            uart_writeln!("cy_http_client_create: {:08x}", status);
+            return Err(FromPrimitive::from_u32(status).unwrap());
+        }
+        unsafe {
+            uart_writeln!("client_handle: {:?}", self.client_handle.assume_init());
+        }
+
+        let status =
+            unsafe { cy_http_client_connect(self.client_handle.assume_init(), 1000, 1000) };
+
+        match status {
+            0 => Ok(()),
+            x => Err(FromPrimitive::from_u32(x).unwrap()),
+        }
+    }
+
+    pub fn http_client_send(
+        &mut self,
+        resource_path: &str,
+        data: Option<&[u8]>,
+    ) -> Result<&[u8], WifiConnectionError> {
+        let resource_path = slice2nulstr!(resource_path);
+        let mut request_header = cy_http_client_request_header_t {
+            method: cy_http_client_method_CY_HTTP_CLIENT_METHOD_GET,
+            headers_len: 0,
+            range_start: 0,
+            range_end: -1,
+            resource_path: resource_path.as_ptr() as *const i8,
+            buffer: self.http_buffer.as_mut_ptr(),
+            buffer_len: self.http_buffer.len() as usize,
+        };
+        {
+            let status = unsafe {
+                cy_http_client_write_header(
+                    self.client_handle.assume_init(),
+                    &mut request_header,
+                    core::ptr::null_mut(),
+                    0,
+                )
+            };
+            if status != 0 {
+                return Err(FromPrimitive::from_u32(status).unwrap());
+            }
+        }
+        let mut response: cy_http_client_response_t =
+            unsafe { MaybeUninit::zeroed().assume_init() };
+        {
+            let status = unsafe {
+                cy_http_client_send(
+                    self.client_handle.assume_init(),
+                    &mut request_header,
+                    if data.is_some() {
+                        data.unwrap().as_ptr() as *mut u8
+                    } else {
+                        core::ptr::null_mut()
+                    },
+                    if data.is_some() {
+                        data.unwrap().len() as u32
+                    } else {
+                        0
+                    },
+                    &mut response,
+                )
+            };
+            if status != 0 {
+                return Err(FromPrimitive::from_u32(status).unwrap());
+            }
+        }
+        let body =
+            unsafe { core::slice::from_raw_parts(response.body, response.body_len as usize) };
+
+        // Safety: It's ok to return a slice of the response buffer because the buffer is inside self.http_buffer
+        Ok(body)
     }
 }
