@@ -21,7 +21,7 @@ extern "C" {
 }
 
 #[no_mangle]
-pub extern "C" fn http_task() {
+pub extern "C" fn smi_main() {
     // unsafe { _http_task() };
     uart_writeln!("Hello {:} from foo_task!", 42);
 

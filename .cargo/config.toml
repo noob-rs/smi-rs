@@ -54,7 +54,7 @@ rustflags = [
     "-C",
     "link-args=-Wl,--gc-sections",
     "-C",
-    "link-arg=-T/home/stefan/work/HSA/science-meets-industry-2024/smi-rs/memory.x",
+    "link-arg=-Tmemory.x",
     # "link-args=-T/home/stefan/work/mtw/Wi-Fi_TCP_Client/bsps/TARGET_APP_CY8CPROTO-062-4343W/COMPONENT_CM4/TOOLCHAIN_GCC_ARM/linker.ld",
     "-C",
     "link-args=-Wl,-Map=smi.map",
