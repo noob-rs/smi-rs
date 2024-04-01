@@ -1,5 +1,6 @@
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit};
 
+use log::{debug, trace};
 use num_traits::FromPrimitive;
 
 use crate::{
@@ -14,7 +15,6 @@ use crate::{
         cy_wcm_interface_t_CY_WCM_INTERFACE_TYPE_STA, cy_wcm_ip_address_t,
         cy_wcm_security_t_CY_WCM_SECURITY_WPA2_AES_PSK,
     },
-    uart_writeln,
 };
 
 const CY_RSLT_WCM_ERR_BASE: u32 = 0x82e0000;
@@ -28,25 +28,26 @@ const fn WHD_RESULT_CREATE(x: u32) -> u32 {
 #[repr(u32)]
 #[derive(FromPrimitive, Debug)]
 pub enum WifiConnectionError {
-    CyRsltWcmWaitTimeout = (CY_RSLT_WCM_ERR_BASE + 1), // Wait timeout.
+    Success = 0,                                                           // Success.
+    CyRsltWcmWaitTimeout = (CY_RSLT_WCM_ERR_BASE + 1),                     // Wait timeout.
     CyRsltWcmBadNetworkParam = (CY_RSLT_WCM_ERR_BASE + 2), // Bad network parameters.
-    CyRsltWcmBadSsidLen = (CY_RSLT_WCM_ERR_BASE + 3),  // Bad SSID length.
+    CyRsltWcmBadSsidLen = (CY_RSLT_WCM_ERR_BASE + 3),      // Bad SSID length.
     CyRsltWcmSecurityNotSupported = (CY_RSLT_WCM_ERR_BASE + 4), // Security not supported.
     CyRsltWcmBadPassphraseLen = (CY_RSLT_WCM_ERR_BASE + 5), // Bad passphrase length.
-    CyRsltWcmBadArg = (CY_RSLT_WCM_ERR_BASE + 6),      // Bad argument.
+    CyRsltWcmBadArg = (CY_RSLT_WCM_ERR_BASE + 6),          // Bad argument.
     CyRsltWcmInterfaceNotSupported = (CY_RSLT_WCM_ERR_BASE + 7), // Interface type not supported.
-    CyRsltWcmMutexError = (CY_RSLT_WCM_ERR_BASE + 8),  // Mutex error.
+    CyRsltWcmMutexError = (CY_RSLT_WCM_ERR_BASE + 8),      // Mutex error.
     CyRsltWcmStaDisconnectError = (CY_RSLT_WCM_ERR_BASE + 9), // STA disconnect error.
     CyRsltWcmStaNetworkDown = (CY_RSLT_WCM_ERR_BASE + 10), // STA network is down.
-    CyRsltWcmBspInitError = (CY_RSLT_WCM_ERR_BASE + 11), // CY BSP initialization error.
+    CyRsltWcmBspInitError = (CY_RSLT_WCM_ERR_BASE + 11),   // CY BSP initialization error.
     CyRsltWcmBspDeinitError = (CY_RSLT_WCM_ERR_BASE + 12), // CY BSP error while de-initialization.
-    CyRsltWcmNoActiveScan = (CY_RSLT_WCM_ERR_BASE + 13), // No active scan running currently.
+    CyRsltWcmNoActiveScan = (CY_RSLT_WCM_ERR_BASE + 13),   // No active scan running currently.
     CyRsltWcmScanInProgress = (CY_RSLT_WCM_ERR_BASE + 14), // Scan in progress.
-    CyRsltWcmScanError = (CY_RSLT_WCM_ERR_BASE + 15),  // Scan error.
-    CyRsltWcmStopScanError = (CY_RSLT_WCM_ERR_BASE + 16), // Stop scan error.
+    CyRsltWcmScanError = (CY_RSLT_WCM_ERR_BASE + 15),      // Scan error.
+    CyRsltWcmStopScanError = (CY_RSLT_WCM_ERR_BASE + 16),  // Stop scan error.
     CyRsltWcmBandNotSupported = (CY_RSLT_WCM_ERR_BASE + 17), // BAND not supported.
-    CyRsltWcmOutOfMemory = (CY_RSLT_WCM_ERR_BASE + 18), // WCM out of memory error.
-    CyRsltWcmChannelError = (CY_RSLT_WCM_ERR_BASE + 19), // Error in retrieving the Wi-Fi channel.
+    CyRsltWcmOutOfMemory = (CY_RSLT_WCM_ERR_BASE + 18),    // WCM out of memory error.
+    CyRsltWcmChannelError = (CY_RSLT_WCM_ERR_BASE + 19),   // Error in retrieving the Wi-Fi channel.
     CyRsltWcmNetifDoesNotExist = (CY_RSLT_WCM_ERR_BASE + 20), // Network interface does not exist.
     CyRsltWcmArpRequestFailure = (CY_RSLT_WCM_ERR_BASE + 21), // Error returned for ARP request failure.
     CyRsltWcmIpv6GlobalAddressNotSupported = (CY_RSLT_WCM_ERR_BASE + 22), // IPv6 global IP not supported.
@@ -244,8 +245,15 @@ pub enum WifiConnectionError {
     CyRsltHttpClientErrorInvalidResponse = (CY_RSLT_HTTP_CLIENT_ERR_BASE + 20),
 }
 
+impl From<WifiConnectionError> for core::fmt::Error {
+    fn from(_: WifiConnectionError) -> Self {
+        core::fmt::Error
+    }
+}
+
+#[macro_export]
 macro_rules! slice2nulstr {
-    ($name:ident) => {{
+    ($name:expr) => {{
         let mut nulstr = [0u8; 256];
         if $name.len() > nulstr.len() {
             return Err(WifiConnectionError::CyRsltWcmBadArg);
@@ -255,22 +263,23 @@ macro_rules! slice2nulstr {
     }};
 }
 
+static mut HTTP_BUFFER: [u8; 128 * 1024] = [0; 128 * 1024];
+
 #[derive(Debug)]
 pub struct WifiConnectionManager {
     /// Buffer for http requests
-    http_buffer: [u8; 4096],
     client_handle: MaybeUninit<cy_http_client_t>,
 }
 
 impl WifiConnectionManager {
     pub fn new() -> Self {
         WifiConnectionManager {
-            http_buffer: [0; 4096],
             client_handle: MaybeUninit::uninit(),
         }
     }
 
     pub fn init(&self) -> Result<(), WifiConnectionError> {
+        trace!("WifiConnectionManager::init()");
         let mut config = cy_wcm_config_t {
             interface: cy_wcm_interface_t_CY_WCM_INTERFACE_TYPE_STA,
         };
@@ -281,6 +290,7 @@ impl WifiConnectionManager {
     }
 
     pub fn connect(&self, ssid: &str, password: &str) -> Result<[u8; 4], WifiConnectionError> {
+        trace!("WifiConnectionManager::connect(ssid: {ssid:}, password: ***)");
         let mut params: cy_wcm_connect_params_t = unsafe { MaybeUninit::zeroed().assume_init() };
         if ssid.len() > params.ap_credentials.SSID.len()
             || password.len() > params.ap_credentials.password.len()
@@ -295,6 +305,7 @@ impl WifiConnectionManager {
         let mut ip_addr: cy_wcm_ip_address_t = unsafe { MaybeUninit::zeroed().assume_init() };
 
         let status = unsafe { cy_wcm_connect_ap(&mut params, &mut ip_addr) };
+        trace!("WifiConnectionManager::connect() status: 0x{status:08x}");
         match status {
             0 => Ok(unsafe { ip_addr.ip.v4 }.to_le_bytes()),
             x => Err(FromPrimitive::from_u32(x).unwrap()),
@@ -302,7 +313,9 @@ impl WifiConnectionManager {
     }
 
     pub fn http_client_init(&self) -> Result<(), WifiConnectionError> {
+        trace!("WifiConnectionManager::init()");
         let status = unsafe { cy_http_client_init() };
+        trace!("WifiConnectionManager::init() status: 0x{status:08x}");
         match status {
             0 => Ok(()),
             x => Err(FromPrimitive::from_u32(x).unwrap()),
@@ -314,15 +327,12 @@ impl WifiConnectionManager {
         hostname: &str,
         port: u32,
     ) -> Result<(), WifiConnectionError> {
+        trace!("WifiConnectionManager::http_client_connect(hostname: {hostname}, port: {port})");
         let hostname = slice2nulstr!(hostname);
         let mut serverinfo = cy_awsport_server_info {
             host_name: hostname.as_ptr() as *const i8,
             port: port as u16,
         };
-        unsafe {
-            uart_writeln!("client_handle: {:?}", self.client_handle.assume_init());
-        }
-
         let status = unsafe {
             cy_http_client_create(
                 core::ptr::null_mut(),
@@ -332,16 +342,17 @@ impl WifiConnectionManager {
                 self.client_handle.assume_init_mut(),
             )
         };
+        trace!(
+            "WifiConnectionManager::http_client_connect:cy_http_client_create status: {status:08x}"
+        );
         if status != 0 {
-            uart_writeln!("cy_http_client_create: {:08x}", status);
             return Err(FromPrimitive::from_u32(status).unwrap());
         }
-        unsafe {
-            uart_writeln!("client_handle: {:?}", self.client_handle.assume_init());
-        }
 
-        let status =
-            unsafe { cy_http_client_connect(self.client_handle.assume_init(), 1000, 1000) };
+        let status = unsafe { cy_http_client_connect(self.client_handle.assume_init(), 200, 1000) };
+        trace!(
+            "WifiConnectionManager::http_client_connect:cy_http_client_connect status: {status:08x}"
+        );
 
         match status {
             0 => Ok(()),
@@ -353,18 +364,20 @@ impl WifiConnectionManager {
         &mut self,
         resource_path: &str,
         data: Option<&[u8]>,
-    ) -> Result<&[u8], WifiConnectionError> {
+    ) -> Result<(u16, &[u8]), WifiConnectionError> {
+        trace!("WifiConnectionManager::http_client_send({resource_path}, {data:x?})");
         let resource_path = slice2nulstr!(resource_path);
-        let mut request_header = cy_http_client_request_header_t {
-            method: cy_http_client_method_CY_HTTP_CLIENT_METHOD_GET,
-            headers_len: 0,
-            range_start: 0,
-            range_end: -1,
-            resource_path: resource_path.as_ptr() as *const i8,
-            buffer: self.http_buffer.as_mut_ptr(),
-            buffer_len: self.http_buffer.len() as usize,
-        };
-        {
+        loop {
+            unsafe { HTTP_BUFFER.fill(0) };
+            let mut request_header = cy_http_client_request_header_t {
+                method: cy_http_client_method_CY_HTTP_CLIENT_METHOD_GET,
+                headers_len: 0,
+                range_start: 0,
+                range_end: -1,
+                resource_path: resource_path.as_ptr() as *const i8,
+                buffer: unsafe { HTTP_BUFFER.as_mut_ptr() },
+                buffer_len: unsafe { HTTP_BUFFER.len() } as usize,
+            };
             let status = unsafe {
                 cy_http_client_write_header(
                     self.client_handle.assume_init(),
@@ -373,13 +386,16 @@ impl WifiConnectionManager {
                     0,
                 )
             };
+            debug!(
+                "WifiConnectionManager::http_client_send:\
+                cy_http_client_write_header status: {status:08x}"
+            );
             if status != 0 {
                 return Err(FromPrimitive::from_u32(status).unwrap());
             }
-        }
-        let mut response: cy_http_client_response_t =
-            unsafe { MaybeUninit::zeroed().assume_init() };
-        {
+
+            let mut response: cy_http_client_response_t =
+                unsafe { MaybeUninit::zeroed().assume_init() };
             let status = unsafe {
                 cy_http_client_send(
                     self.client_handle.assume_init(),
@@ -397,14 +413,27 @@ impl WifiConnectionManager {
                     &mut response,
                 )
             };
-            if status != 0 {
-                return Err(FromPrimitive::from_u32(status).unwrap());
+            debug!(
+                "WifiConnectionManager::http_client_send:\
+                cy_http_client_send status: {status:08x} response: {response:02x?}"
+            );
+            match FromPrimitive::from_u32(status).unwrap() {
+                WifiConnectionError::Success => (),
+                WifiConnectionError::CyRsltHttpClientErrorNoResponse
+                | WifiConnectionError::CyRsltHttpClientErrorPartialResponse => continue,
+                x => return Err(x),
             }
-        }
-        let body =
-            unsafe { core::slice::from_raw_parts(response.body, response.body_len as usize) };
 
-        // Safety: It's ok to return a slice of the response buffer because the buffer is inside self.http_buffer
-        Ok(body)
+            let body = unsafe {
+                core::slice::from_raw_parts(
+                    (response.body as usize + response.body_len - response.content_len)
+                        as *const u8,
+                    response.content_len as usize,
+                )
+            };
+
+            // Safety: It's ok to return a slice of the response buffer because the buffer is inside self.http_buffer
+            return Ok((response.status_code, body));
+        }
     }
 }

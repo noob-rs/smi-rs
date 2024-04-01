@@ -1,4 +1,5 @@
 use core::ptr::addr_of;
+use log::{Metadata, Record};
 
 pub(crate) struct Io;
 
@@ -36,3 +37,27 @@ macro_rules! uart_writeln {
         writeln!(io, $($arg)*).unwrap();
     }};
 }
+
+pub struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            uart_writeln!(
+                "{} {}:{} {}",
+                record.level(),
+                record.file().unwrap(),
+                record.line().unwrap(),
+                record.args()
+            );
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+pub static LOGGER: SimpleLogger = SimpleLogger;
