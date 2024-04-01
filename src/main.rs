@@ -4,8 +4,10 @@
 #[macro_use]
 extern crate num_derive;
 
+mod crypto;
 mod cy_http_client_api;
 mod cy_wcm;
+mod cyhal_trng;
 mod http;
 mod mfrc522;
 mod nfc;
@@ -13,10 +15,9 @@ mod retargetio;
 mod solver;
 
 use core::panic::PanicInfo;
+use log::{debug, info};
 
-use log::debug;
-
-use crate::{retargetio::LOGGER, solver::Solver};
+use crate::{crypto::Crypto, retargetio::LOGGER, solver::Solver};
 
 extern "C" {
     // fn http_task_init();
@@ -33,13 +34,15 @@ pub extern "C" fn smi_main() {
         .map(|()| log::set_max_level(log::LevelFilter::Info))
         .unwrap();
 
-    debug!("Hello from smi_main");
+    info!("Hello from smi_main");
 
-    let mut solver = Solver::new();
-    solver.do_nfc();
-    solver.do_wifi();
-    solver.solve();
-    solver.send_solution();
+    Crypto::new().rsa_keygen();
+
+    // let mut solver = Solver::new();
+    // solver.do_nfc();
+    // solver.do_wifi();
+    // solver.solve();
+    // solver.send_solution();
 }
 
 #[inline(never)]
@@ -49,3 +52,34 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {}
 }
+
+extern crate alloc;
+use alloc::alloc::*;
+
+/// The global allocator type.
+#[derive(Default)]
+pub struct Allocator;
+
+extern "C" {
+    fn malloc(size: u32) -> *mut core::ffi::c_void;
+    fn free(ptr: *mut core::ffi::c_void);
+}
+
+unsafe impl GlobalAlloc for Allocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        malloc(layout.size() as u32) as *mut u8
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        free(ptr as *mut core::ffi::c_void);
+    }
+}
+
+/// If there is an out of memory error, just panic.
+// #[alloc_error_handler]
+// fn my_allocator_error(_layout: Layout) -> ! {
+//     panic!("out of memory");
+// }
+
+/// The static global allocator.
+#[global_allocator]
+static GLOBAL_ALLOCATOR: Allocator = Allocator;

@@ -43,8 +43,8 @@ rustflags = [
     "link_args=-ffunction-sections",
     "-C",
     "link-args=-fdata-sections",
-    # "-C",
-    # "link-args=-ffat-lto-objects",
+    "-C",
+    "link-args=-Wl,--allow-multiple-definition",
     # "-C",
     # "link-args=-g",
     # "-C",
@@ -68,8 +68,6 @@ rustflags = [
     # "link-arg=-nostdlib",
     "-C",
     "link-args=-Wl,--start-group libsmi.a -Wl,--end-group",
-    # "-C",
-    # "link-arg=-Tdefmt.x",
 ]
 
 [build]
