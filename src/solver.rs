@@ -1,7 +1,9 @@
+use aes::cipher::StreamCipher;
 use log::{debug, info};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    crypto::{self, Crypto},
     http::{WifiConnectionError, WifiConnectionManager},
     mfrc522,
     nfc::{self, Nfc, NfcPins},
@@ -70,15 +72,20 @@ impl NfcHashTable {
 
 pub struct ServerHashTable {
     hashes: [ShortHashEntry; 64],
-    wcm: WifiConnectionManager,
+    pub(crate) wcm: WifiConnectionManager,
+    #[cfg(feature = "crypto")]
+    pub(crate) crypto: Crypto,
 }
 
 impl ServerHashTable {
     pub fn new() -> Self {
-        Self {
+        let mut result = Self {
             hashes: [Default::default(); 64],
             wcm: WifiConnectionManager::new(),
-        }
+            crypto: Default::default(),
+        };
+        result.crypto.rsa_keygen();
+        result
     }
 
     pub fn connect(&mut self, ssid: &str, password: &str) -> Result<(), WifiConnectionError> {
@@ -91,7 +98,13 @@ impl ServerHashTable {
         }
         self.wcm.http_client_init()?;
         self.wcm
-            .http_client_connect("smi-server.stefan-hackenberg.de", 80)
+            .http_client_connect("smi-server.stefan-hackenberg.de", 80)?;
+
+        #[cfg(feature = "crypto")]
+        {
+            self.crypto.establish_crypto(&mut self.wcm)?;
+        }
+        Ok(())
     }
 
     fn read_snippet_from_server(
@@ -102,9 +115,37 @@ impl ServerHashTable {
         let mut buffer = [0u8; 8];
         let _ = &mut buffer[..7].copy_from_slice(uid);
         buffer[7] = index as u8;
-        let (status_code, snippet) = self.wcm.http_client_send("/getsnippet", Some(&buffer))?;
+
+        #[cfg(feature = "crypto")]
+        {
+            self.crypto
+                .ctr_instance
+                .as_mut()
+                .unwrap()
+                .apply_keystream(&mut buffer);
+        }
+
+        let (status_code, snippet) = self.wcm.http_client_send(
+            if cfg!(feature = "crypto") {
+                "/crypto/aes_ctr/getsnippet"
+            } else {
+                "/getsnippet"
+            },
+            Some(&buffer),
+        )?;
         assert!(status_code == 200);
-        Ok(snippet)
+
+        if cfg!(feature = "crypto") {
+            self.crypto
+                .ctr_instance
+                .as_mut()
+                .unwrap()
+                .apply_keystream_b2b(snippet, unsafe { &mut crypto::BUFFER[..snippet.len()] })
+                .unwrap();
+            Ok(unsafe { &crypto::BUFFER[..snippet.len()] })
+        } else {
+            Ok(snippet)
+        }
     }
 
     pub fn read_snippets_from_server(&mut self, uid: &[u8]) -> Result<(), WifiConnectionError> {
@@ -122,9 +163,9 @@ impl ServerHashTable {
 }
 
 pub struct Solver {
-    nfc_hash_table: NfcHashTable,
-    server_hash_table: ServerHashTable,
-    solution: [u8; 64],
+    pub(crate) nfc_hash_table: NfcHashTable,
+    pub(crate) server_hash_table: ServerHashTable,
+    pub(crate) solution: [u8; 64],
 }
 
 impl Solver {
@@ -157,6 +198,7 @@ impl Solver {
             .read_snippets_from_server(&self.nfc_hash_table.nfc_uid)
             .unwrap();
     }
+
     pub fn solve(&mut self) {
         self.solution.fill(65);
         for i in 0..64 {
@@ -176,10 +218,28 @@ impl Solver {
         let mut buffer = [0u8; 7 + 64];
         buffer[..7].copy_from_slice(&self.nfc_hash_table.nfc_uid);
         buffer[7..].copy_from_slice(&self.solution);
+
+        #[cfg(feature = "crypto")]
+        {
+            self.server_hash_table
+                .crypto
+                .ctr_instance
+                .as_mut()
+                .unwrap()
+                .apply_keystream(&mut buffer);
+        }
+
         let (result_status, _) = self
             .server_hash_table
             .wcm
-            .http_client_send("/solve", Some(&buffer))
+            .http_client_send(
+                if cfg!(feature = "crypto") {
+                    "/crypto/aes_ctr/solve"
+                } else {
+                    "/solve"
+                },
+                Some(&buffer),
+            )
             .unwrap();
         info!("Solver::send_solution result_status: {result_status}");
         assert!(result_status == 200);

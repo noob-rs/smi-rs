@@ -15,9 +15,9 @@ mod retargetio;
 mod solver;
 
 use core::panic::PanicInfo;
-use log::{debug, info};
+use log::info;
 
-use crate::{crypto::Crypto, retargetio::LOGGER, solver::Solver};
+use crate::{retargetio::LOGGER, solver::Solver};
 
 extern "C" {
     // fn http_task_init();
@@ -36,13 +36,20 @@ pub extern "C" fn smi_main() {
 
     info!("Hello from smi_main");
 
-    Crypto::new().rsa_keygen();
+    // let mut server = ServerHashTable::new();
+    // server.connect(&WIFI_SSID, &WIFI_PASSWORD).unwrap();
 
-    // let mut solver = Solver::new();
-    // solver.do_nfc();
-    // solver.do_wifi();
-    // solver.solve();
-    // solver.send_solution();
+    // let mut crypto = Crypto::new();
+    // crypto.rsa_keygen();
+    // crypto.send_public_key(&mut server.wcm);
+    // crypto.get_server_public_key(&mut server.wcm);
+    // crypto.exchange_aes_key(&mut server.wcm);
+
+    let mut solver = Solver::new();
+    solver.do_nfc();
+    solver.do_wifi();
+    solver.solve();
+    solver.send_solution();
 }
 
 #[inline(never)]
