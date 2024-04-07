@@ -1,14 +1,23 @@
+#[cfg(feature = "crypto")]
 use aes::cipher::StreamCipher;
 use log::{debug, info};
 use sha2::{Digest, Sha256};
 
+#[cfg(not(target_os = "none"))]
+use reqwest::Error;
+
+#[cfg(target_os = "none")]
 use crate::{
-    crypto::{self, Crypto},
     http::{WifiConnectionError, WifiConnectionManager},
     mfrc522,
     nfc::{self, Nfc, NfcPins},
     WIFI_PASSWORD, WIFI_SSID,
 };
+
+#[cfg(feature = "crypto")]
+use crate::crypto::{self, Crypto};
+#[cfg(not(target_os = "none"))]
+use crate::nfc::Nfc;
 
 type ShortHashEntry = [u8; 11];
 
@@ -20,9 +29,18 @@ pub struct NfcHashTable {
 }
 
 impl NfcHashTable {
+    #[cfg(target_os = "none")]
     pub fn new(pins: NfcPins) -> Self {
         Self {
             nfc: Nfc::new(pins),
+            nfc_uid: [0; 7],
+            hashes: [Default::default(); 64],
+        }
+    }
+    #[cfg(not(target_os = "none"))]
+    pub fn new() -> Self {
+        Self {
+            nfc: Nfc::new(),
             nfc_uid: [0; 7],
             hashes: [Default::default(); 64],
         }
@@ -72,18 +90,25 @@ impl NfcHashTable {
 
 pub struct ServerHashTable {
     hashes: [ShortHashEntry; 64],
+    #[cfg(target_os = "none")]
     pub(crate) wcm: WifiConnectionManager,
     #[cfg(feature = "crypto")]
     pub(crate) crypto: Crypto,
+    #[cfg(not(target_os = "none"))]
+    buffer: [u8; 8092],
 }
 
+#[cfg(target_os = "none")]
 impl ServerHashTable {
     pub fn new() -> Self {
+        #[allow(unused_mut)]
         let mut result = Self {
             hashes: [Default::default(); 64],
             wcm: WifiConnectionManager::new(),
+            #[cfg(feature = "crypto")]
             crypto: Default::default(),
         };
+        #[cfg(feature = "crypto")]
         result.crypto.rsa_keygen();
         result
     }
@@ -101,9 +126,7 @@ impl ServerHashTable {
             .http_client_connect("smi-server.stefan-hackenberg.de", 80)?;
 
         #[cfg(feature = "crypto")]
-        {
-            self.crypto.establish_crypto(&mut self.wcm)?;
-        }
+        self.crypto.establish_crypto(&mut self.wcm)?;
         Ok(())
     }
 
@@ -135,7 +158,8 @@ impl ServerHashTable {
         )?;
         assert!(status_code == 200);
 
-        if cfg!(feature = "crypto") {
+        #[cfg(feature = "crypto")]
+        {
             self.crypto
                 .ctr_instance
                 .as_mut()
@@ -143,12 +167,88 @@ impl ServerHashTable {
                 .apply_keystream_b2b(snippet, unsafe { &mut crypto::BUFFER[..snippet.len()] })
                 .unwrap();
             Ok(unsafe { &crypto::BUFFER[..snippet.len()] })
-        } else {
-            Ok(snippet)
         }
+        #[cfg(not(feature = "crypto"))]
+        Ok(snippet)
     }
 
     pub fn read_snippets_from_server(&mut self, uid: &[u8]) -> Result<(), WifiConnectionError> {
+        for index in 0..64 {
+            let digest: [u8; 32] =
+                Sha256::digest(self.read_snippet_from_server(index, uid)?).into();
+            self.hashes[index].copy_from_slice(&digest[..11]);
+            info!(
+                "ServerHashTable::read_snippets_from_server: index: {index}, hash: {:02x?}",
+                self.hashes[index]
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+impl ServerHashTable {
+    pub fn new() -> Self {
+        #[allow(unused_mut)]
+        let mut result = Self {
+            hashes: [Default::default(); 64],
+            #[cfg(feature = "crypto")]
+            crypto: Default::default(),
+            buffer: [0; 8092],
+        };
+        #[cfg(feature = "crypto")]
+        result.crypto.rsa_keygen();
+        result
+    }
+
+    pub fn connect(&mut self) -> Result<(), Error> {
+        #[cfg(feature = "crypto")]
+        {
+            self.crypto.establish_crypto()?;
+        }
+        Ok(())
+    }
+
+    fn read_snippet_from_server(&mut self, index: usize, uid: &[u8]) -> Result<&[u8], Error> {
+        assert!(uid.len() == 7);
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(uid);
+        buffer.push(index as u8);
+        #[cfg(feature = "crypto")]
+        {
+            self.crypto
+                .ctr_instance
+                .as_mut()
+                .unwrap()
+                .apply_keystream(&mut buffer);
+        }
+
+        let response = reqwest::blocking::Client::new()
+            .get(format!(
+                "http://smi-server.stefan-hackenberg.de/{}getsnippet",
+                if cfg!(feature = "crypto") {
+                    "/crypto/aes_ctr/"
+                } else {
+                    ""
+                }
+            ))
+            .body(buffer)
+            .send()?;
+        assert!(response.status() == 200);
+        let response_body = response.bytes()?;
+        self.buffer[..response_body.len()].copy_from_slice(&response_body);
+
+        #[cfg(feature = "crypto")]
+        self.crypto
+            .ctr_instance
+            .as_mut()
+            .unwrap()
+            .apply_keystream(&mut self.buffer[..response_body.len()]);
+
+        Ok(&self.buffer[..response_body.len()])
+    }
+
+    pub fn read_snippets_from_server(&mut self, uid: &[u8]) -> Result<(), Error> {
         for index in 0..64 {
             let digest: [u8; 32] =
                 Sha256::digest(self.read_snippet_from_server(index, uid)?).into();
@@ -171,13 +271,16 @@ pub struct Solver {
 impl Solver {
     pub fn new() -> Self {
         Self {
-            nfc_hash_table: NfcHashTable::new(nfc::NfcPins {
-                mosi: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_0,
-                miso: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_1,
-                sclk: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_2,
-                cs: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_3,
-                reset: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_4,
-            }),
+            nfc_hash_table: NfcHashTable::new(
+                #[cfg(target_os = "none")]
+                nfc::NfcPins {
+                    mosi: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_0,
+                    miso: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_1,
+                    sclk: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_2,
+                    cs: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_3,
+                    reset: mfrc522::cyhal_gpio_psoc6_02_124_bga_t_P9_4,
+                },
+            ),
             server_hash_table: ServerHashTable::new(),
             solution: [0; 64],
         }
@@ -191,9 +294,12 @@ impl Solver {
     }
 
     pub fn do_wifi(&mut self) {
+        #[cfg(target_os = "none")]
         self.server_hash_table
             .connect(&WIFI_SSID, &WIFI_PASSWORD)
             .unwrap();
+        #[cfg(not(target_os = "none"))]
+        self.server_hash_table.connect().unwrap();
         self.server_hash_table
             .read_snippets_from_server(&self.nfc_hash_table.nfc_uid)
             .unwrap();
@@ -214,6 +320,7 @@ impl Solver {
         }
     }
 
+    #[cfg(target_os = "none")]
     pub fn send_solution(&mut self) {
         let mut buffer = [0u8; 7 + 64];
         buffer[..7].copy_from_slice(&self.nfc_hash_table.nfc_uid);
@@ -243,5 +350,38 @@ impl Solver {
             .unwrap();
         info!("Solver::send_solution result_status: {result_status}");
         assert!(result_status == 200);
+    }
+
+    #[cfg(not(target_os = "none"))]
+    pub fn send_solution(&mut self) {
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&self.nfc_hash_table.nfc_uid);
+        buffer.extend_from_slice(&self.solution);
+
+        #[cfg(feature = "crypto")]
+        {
+            self.server_hash_table
+                .crypto
+                .ctr_instance
+                .as_mut()
+                .unwrap()
+                .apply_keystream(&mut buffer);
+        }
+
+        let response = reqwest::blocking::Client::new()
+            .get(format!(
+                "http://smi-server.stefan-hackenberg.de/{}solve",
+                if cfg!(feature = "crypto") {
+                    "/crypto/aes_ctr/"
+                } else {
+                    ""
+                }
+            ))
+            .body(buffer)
+            .send()
+            .unwrap()
+            .status();
+        info!("Solver::send_solution result_status: {response}");
+        assert!(response == 200);
     }
 }
